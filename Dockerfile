@@ -24,17 +24,17 @@ RUN cp /usr/lib/PXELINUX/pxelinux.0 /var/lib/tftpboot
 RUN cp /tmp/offline-packages/ldlinux.c32 /var/lib/tftpboot
 
 # Add kernel and initrd files (these must be included in the build context)
-COPY noble-server-cloudimg-amd64-vmlinuz-generic /var/lib/tftpboot
-COPY noble-server-cloudimg-amd64-initrd-generic /var/lib/tftpboot
+COPY ./linux_staff/noble-server-cloudimg-amd64-vmlinuz-generic /var/lib/tftpboot
+COPY ./linux_staff/noble-server-cloudimg-amd64-initrd-generic /var/lib/tftpboot
 
 # Copy PXE configuration file
-COPY pxelinux.cfg/default /var/lib/tftpboot/pxelinux.cfg/default
+#COPY pxelinux.cfg/default /var/lib/tftpboot/pxelinux.cfg/default
 
 # Copy DHCP configuration file
-COPY dhcpd.conf /etc/dhcp/dhcpd.conf
+COPY ./conf_files/dhcpd.conf /etc/dhcp/dhcpd.conf
 
 # Copy TFTP server configuration
-COPY tftpd-hpa /etc/default/tftpd-hpa
+COPY ./conf_files/tftpd-hpa /etc/default/tftpd-hpa
 
 # Copy the monitoring script
 COPY tftp_monitor.sh /tftp_monitor.sh

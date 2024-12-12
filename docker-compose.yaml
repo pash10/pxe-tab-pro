@@ -2,7 +2,7 @@ services:
   pxe-server:
     build:
       context: .
-    container_name: pxe-server
+    container_name: docker-ser-ser
     ports:
       - "67:67/udp"
       - "69:69/udp"

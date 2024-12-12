@@ -2,57 +2,93 @@
 
 LOG_FILE="/var/log/syslog"
 TRACKER_FILE="/var/log/tftp_requests.txt"
-ISO_FILE="pxelinux.0"
+ISO_FOLDER="/var/lib/tftpboot/iso_files"
+TFTP_DIR="/var/lib/tftpboot"
+ISO_FILE=""
+DEPLOYMENT_SCRIPT="./deployment.sh"
+FILE_NAME_THAT_CH=''
+SAMBA_IMAGE_FOLDER="/mnt/samba/images"
+CHECK_EMPTRY='true'
+MOUNT_POINT="/mnt/samba/images"
+MOUNT_WORK='false'
 
-if  [[ -z $1 ]]; then
-     echo "Usage : $0 <MIN_DOWNLOADS>"
-     exit 1
-fi 
-
-
-MIN_DOWNLOADS=$1
-
-read -p "Do you want to start monitoring PXE downloads? (yes/no): " START_RESPONSE
-if [[ "$START_RESPONSE" != "yes" ]]; then
-    echo "Exiting PXE monitoring."
-    exit 0
-fi
-
-
-echo "Monitoring TFTP downloads for file: $ISO_FILE"
-echo "Minimum downloads required: $MIN_DOWNLOADS"
-
-if [[ ! -f $LOG_FILE ]]; then
-    > "$LOG_FILE"
-fi
-
-if [[ ! -f $TRACKER_FILE ]]; then
-    > "$TRACKER_FILE"
-fi
-
-while true; do
-    grep "RRQ" "$LOG_FILE" | grep "$ISO_FILE" | awk '{print $5}' | sort -u > "$TRACKER_FILE"
-
-    DOWNLOAD_COUNT=$(wc -l < "$TRACKER_FILE")
-    echo "Current unique downloads: $DOWNLOAD_COUNT"
-
-    if [[ $DOWNLOAD_COUNT -eq $MIN_DOWNLOADS ]]; then
-        echo "Threshold met! Starting PXE deployment..."
-        > "$TRACKER_FILE" 
-
-        # Start deployment logic
-        echo "Deploying PXE boot..."
-        # Replace the following with actual deployment commands
-        # Example: Initiate deployment script
-        bash "/deployment-script.sh"
-
-       else
-       echo "Threshold did not meet the req qu..."
+sync_iso_from_samba() {
+    echo "Syncing ISO files from Samba server..."
+    rsync -av --delete "$SAMBA_IMAGE_FOLDER/" "$ISO_FOLDER/"
+    if [[ $? -eq 0 ]]; then
+        echo "Sync completed successfully."
+    else
+        echo "Error: Failed to sync with Samba server."
     fi
+}
 
-    sleep 10
+select_iso() {
+    iso_files=("$ISO_FOLDER"/*)
+    ISO_COUNT=${#iso_files[@]}
+
+    if[[$ISO_COUNT -eq 1]];then
+        $ISO_FILE="$iso_files[0]"
+        $FILE_NAME_THAT_CH=$ISO_FILE
+        echo "Only one ISO file found. Automatically selected: $(basename "$ISO_FILE")" 
+    fi 
+     
+}
+
+monitor_pxe() {
+    echo "Monitoring TFTP requests in: $TRACKER_FILE"
+    while read -r request; do
+        if [[ -f "$request" ]]; then
+            echo "Processing request for: $request"
+            bash "$DEPLOYMENT_SCRIPT" "$request"
+            sed -i \"/^$request$/d\" "$TRACKER_FILE"
+            echo "Request completed and removed: $request"
+        fi
+    done < "$TRACKER_FILE"
+}
+
+check_and_remount_samba() {
+    if ! mountpoint -q "$SAMBA_IMAGE_FOLDER"; then
+        echo "Problem: The Samba server lost connection for some reason."
+        read -p "Do you want to attempt remounting? (yes/no): " choice
+        if [[ "$choice" == "yes" ]]; then
+            echo "Attempting to remount Samba server..."
+            mount -t cifs -o username="$SAMBA_USER",password="$SAMBA_PASSWORD" "$SAMBA_SERVER" "$SAMBA_IMAGE_FOLDER"
+            if mountpoint -q "$SAMBA_IMAGE_FOLDER"; then
+                echo "Samba server successfully remounted."
+                MOUNT_WORK='true'
+            else
+                echo "Failed to remount Samba server."
+                $MOUNT_WORK='false'
+            fi
+        else
+            echo "Remounting skipped by user."
+        fi
+    fi
+}
+
+# Start monitoring process
+while true; do
+    check_and_remount_samba
+    if [[ $CHECK_EMPTRY == 'true' ]]; then
+        if [[ $MOUNT_WORK == 'true' ]]; then
+            sync_iso_from_samba
+            select_iso
+            if [[ -f "$ISO_FILE" && "$ISO_FILE" != "" ]]; then
+                CHECK_EMPTRY='false'
+            fi
+        else
+            echo "Problem: Unable to sync files because the Samba mount is not active."
+        fi
+    else
+        for ((i = 0; i < 30; i++)); do
+            monitor_pxe
+            if ((i == 29)); then
+                CHECK_EMPTRY='true'
+            fi
+            sleep 1
+        done
+    fi
 done
-
 
 
 

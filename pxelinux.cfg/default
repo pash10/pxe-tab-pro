@@ -1,0 +1,4 @@
+DEFAULT linux
+LABEL linux
+    KERNEL vmlinuz
+    APPEND initrd=initrd.img

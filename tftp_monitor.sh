@@ -1,94 +1,50 @@
 #!/bin/bash
+set -euo pipefail
 
-LOG_FILE="/var/log/syslog"
-TRACKER_FILE="/var/log/tftp_requests.txt"
-ISO_FOLDER="/var/lib/tftpboot/iso_files"
-TFTP_DIR="/var/lib/tftpboot"
-ISO_FILE=""
-DEPLOYMENT_SCRIPT="./deployment.sh"
-FILE_NAME_THAT_CH=''
-SAMBA_IMAGE_FOLDER="/mnt/samba/images"
-CHECK_EMPTRY='true'
-MOUNT_POINT="/mnt/samba/images"
-MOUNT_WORK='false'
+SOURCE=/mnt/samba/images
+DEST=/var/lib/tftpboot/iso_files
+MANIFEST=${IMAGE_CHECKSUMS_FILE:-/run/secrets/image-sha256sums}
+CREDENTIALS=${SAMBA_CREDENTIALS_FILE:-/run/secrets/samba-credentials}
 
-sync_iso_from_samba() {
-    echo "Syncing ISO files from Samba server..."
-    rsync -av --delete "$SAMBA_IMAGE_FOLDER/" "$ISO_FOLDER/"
-    if [[ $? -eq 0 ]]; then
-        echo "Sync completed successfully."
-    else
-        echo "Error: Failed to sync with Samba server."
+sync_verified_images() {
+    mkdir -p "$SOURCE" "$DEST"
+    if ! mountpoint -q "$SOURCE"; then
+        : "${SAMBA_SERVER:?Set SAMBA_SERVER}"
+        [[ -f "$CREDENTIALS" && ! -L "$CREDENTIALS" ]] || return 1
+        [[ "$(stat -c '%a' "$CREDENTIALS")" =~ ^(400|600)$ ]] || return 1
+        mount -t cifs -o "credentials=$CREDENTIALS,ro,nosuid,nodev,noexec" "$SAMBA_SERVER" "$SOURCE"
     fi
-}
+    mountpoint -q "$SOURCE" || return 1
+    [[ -s "$MANIFEST" && ! -L "$MANIFEST" ]] || return 1
 
-select_iso() {
-    iso_files=("$ISO_FOLDER"/*)
-    ISO_COUNT=${#iso_files[@]}
-
-    if[[$ISO_COUNT -eq 1]];then
-        $ISO_FILE="$iso_files[0]"
-        $FILE_NAME_THAT_CH=$ISO_FILE
-        echo "Only one ISO file found. Automatically selected: $(basename "$ISO_FILE")" 
-    fi 
-     
-}
-
-monitor_pxe() {
-    echo "Monitoring TFTP requests in: $TRACKER_FILE"
-    while read -r request; do
-        if [[ -f "$request" ]]; then
-            echo "Processing request for: $request"
-            bash "$DEPLOYMENT_SCRIPT" "$request"
-            sed -i \"/^$request$/d\" "$TRACKER_FILE"
-            echo "Request completed and removed: $request"
+    # Trust only an operator-provided manifest outside the network share.
+    # Limit this prototype to flat ISO filenames. Reject unexpected paths.
+    local digest name tmp count=0
+    tmp=$(mktemp -d "$DEST/.verified.XXXXXXXX") || return 1
+    while read -r digest name; do
+        name=${name#\*}
+        if [[ ! "$digest" =~ ^[A-Fa-f0-9]{64}$ || ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.iso$ || ! -f "$SOURCE/$name" || -L "$SOURCE/$name" ]]; then
+            rm -rf -- "$tmp"
+            return 1
         fi
-    done < "$TRACKER_FILE"
-}
-
-check_and_remount_samba() {
-    if ! mountpoint -q "$SAMBA_IMAGE_FOLDER"; then
-        echo "Problem: The Samba server lost connection for some reason."
-        read -p "Do you want to attempt remounting? (yes/no): " choice
-        if [[ "$choice" == "yes" ]]; then
-            echo "Attempting to remount Samba server..."
-            mount -t cifs -o username="$SAMBA_USER",password="$SAMBA_PASSWORD" "$SAMBA_SERVER" "$SAMBA_IMAGE_FOLDER"
-            if mountpoint -q "$SAMBA_IMAGE_FOLDER"; then
-                echo "Samba server successfully remounted."
-                MOUNT_WORK='true'
-            else
-                echo "Failed to remount Samba server."
-                $MOUNT_WORK='false'
-            fi
-        else
-            echo "Remounting skipped by user."
+        if ! cp -- "$SOURCE/$name" "$tmp/$name" || ! (cd "$tmp" && printf '%s  %s\n' "$digest" "$name" | sha256sum --check --status); then
+            rm -rf -- "$tmp"
+            return 1
         fi
-    fi
+        count=$((count + 1))
+    done < "$MANIFEST"
+    if (( count == 0 )); then rm -rf -- "$tmp"; return 1; fi
+    mountpoint -q "$SOURCE" || { rm -rf -- "$tmp"; return 1; }
+    # Publish only verified files; do not remove previously published files.
+    for name in "$tmp"/*.iso; do
+        mv -fT -- "$name" "$DEST/$(basename "$name")" || { rm -rf -- "$tmp"; return 1; }
+    done
+    rmdir -- "$tmp"
 }
 
-# Start monitoring process
 while true; do
-    check_and_remount_samba
-    if [[ $CHECK_EMPTRY == 'true' ]]; then
-        if [[ $MOUNT_WORK == 'true' ]]; then
-            sync_iso_from_samba
-            select_iso
-            if [[ -f "$ISO_FILE" && "$ISO_FILE" != "" ]]; then
-                CHECK_EMPTRY='false'
-            fi
-        else
-            echo "Problem: Unable to sync files because the Samba mount is not active."
-        fi
-    else
-        for ((i = 0; i < 30; i++)); do
-            monitor_pxe
-            if ((i == 29)); then
-                CHECK_EMPTRY='true'
-            fi
-            sleep 1
-        done
+    if ! sync_verified_images; then
+        echo "Image sync refused: check mount, permissions and trusted checksum manifest." >&2
     fi
+    sleep 60
 done
-
-
-

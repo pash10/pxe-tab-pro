@@ -1,14 +1,15 @@
 # Base image
-FROM ubuntu:latest
+FROM ubuntu:24.04
 
 # Copy offline packages into the image
 COPY offline-packages /tmp/offline-packages
 
 # Install dependencies from the copied packages
-RUN dpkg -i /tmp/offline-packages/*.deb || apt-get -f install -y
+RUN dpkg -i /tmp/offline-packages/*.deb
+# Missing dependencies must be supplied in the offline package bundle.
+# Do not fall back to a network package installation.
 
-# Remove any existing file or symlink at /var/lib/tftpboot
-RUN rm -rf /var/lib/tftpboot
+# Keep boot directory creation non-destructive.
 
 # Create the TFTP boot directory
 RUN mkdir -p /var/lib/tftpboot/pxelinux.cfg

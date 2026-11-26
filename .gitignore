@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.credentials
+pxe-data/
+*.log

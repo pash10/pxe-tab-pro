@@ -1,19 +1,23 @@
 #!/bin/bash
-
-# Start DHCP server
-service isc-dhcp-server start
-
-# Start TFTP server
-service tftpd-hpa start
-
-mkdir -p "$SAMBA_FOLDER"
-
-
-if [[ $? -ne 0 ]]; then
-    echo "Error: Failed to mount Samba share."
+set -euo pipefail
+if [[ "${PXE_LAB_APPROVED:-}" != "yes" ]]; then
+    echo "PXE services disabled. Authorize an isolated provisioning lab first." >&2
     exit 1
 fi
-
-echo "Samba share mounted successfully at $SAMBA_FOLDER."
-# Run the TFTP monitor script
-bash /tftp_monitor.sh 
+# Do not start with a previously generated unattended restore config.
+config=/var/lib/tftpboot/pxelinux.cfg
+mkdir -p "$config"
+if [[ -n "$(find "$config" -mindepth 1 -maxdepth 1 ! -name default -print -quit)" ]]; then
+    echo "Unexpected client-specific boot configuration; review manually." >&2
+    exit 1
+fi
+cat > "$config/default" <<'EOF'
+DEFAULT local
+LABEL local
+    LOCALBOOT 0
+PROMPT 1
+TIMEOUT 50
+EOF
+service isc-dhcp-server start
+service tftpd-hpa start
+exec bash /tftp_monitor.sh
